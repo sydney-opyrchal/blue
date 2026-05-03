@@ -2,6 +2,48 @@
 
 Honest list of v.1 limitations. Some are deliberate cuts (cross-referenced to `SPEC.md` §13 and `DECISIONS.md`); some are real gaps that haven't been addressed yet. This file is updated during development as new gaps surface.
 
+## v.1 implementation status (spec → code delta)
+
+The spec was written first and aims at a production-grade prototype. The v.1 build hit time before reaching every part of it. This section is the honest delta between what `SPEC.md` and `DECISIONS.md` describe and what is actually running in the repo. Items marked deferred are not failures — they are scope cuts to land a working end-to-end demo within budget. Each is queued for v.1.5.
+
+### What is fully implemented
+
+- MQTT broker (Mosquitto) with the docker-compose stack — ADR-001 ✓
+- FastAPI ingest service with paho-mqtt + asyncpg in a single async process — ADR-004 ✓
+- TimescaleDB hypertable for telemetry, with a tag-based row layout — ADR-003 (schema simplified, see below) ✓
+- WebSocket fan-out to React clients with a typed message envelope — ADR-009 (envelope shape simplified, see below) ✓
+- React dashboard with live factory-floor SVG, asset detail with live charts, alarm console with acknowledge, fleet table, and alarm history — FR-6.1 / 6.2 / 6.3 / 6.4 ✓
+- Anomaly injection in the simulator producing realistic alarms end-to-end ✓
+- No-auth posture documented and intentional — ADR-011 ✓
+- Spec-first hand-rolled docs (SPEC, PLAN, CLAUDE, DECISIONS, KNOWN_ISSUES) — ADR-014 ✓
+
+### What is partially implemented (simplified from spec)
+
+- **Telemetry payload schema** (ADR-002, SPEC §6.1). Code uses `{ts, asset_id, metric, value}`. Spec specifies additionally `schema_version`, `quality`, and a `metadata` block with `unit`, `site`, `bay`, `cell`. Forward-compat fields not yet emitted. v.1.5 priority.
+- **MQTT topic shape** (SPEC §6.1). Code uses `factory/{area}/{cell}/{asset_id}/{metric}` (4 levels). Spec specifies `factory/{site}/{bay}/{cell}/{device_id}/{tag}` (5 levels — `site` is missing). The multi-site case is structurally available but not exercised. v.1.5 priority.
+- **Database schema** (SPEC §6.4). The `readings` hypertable carries `(ts, asset_id, metric, value)`. Spec specifies `(time, site, bay, cell, device_id, tag, value, quality, unit)`. v.1.5 priority.
+- **Alarm record** (ADR-008, SPEC §6.2). The lifecycle column shape is implemented (`raised_at`, `cleared_at`, `acknowledged`). The ULID `alarm_id` is not — current PK is `BIGSERIAL`. v.1.5 priority.
+- **WebSocket envelope** (ADR-009, SPEC §6.3). Spec specifies `{type, timestamp, payload}` with `type` ∈ `{telemetry, alarm, machine_status, system_status}`. Code uses `{type, ...fields}` with `type` ∈ `{snapshot, reading, alarm_raised, alarm_cleared, alarm_acked}`. The typed-envelope discipline holds; the exact shape differs. v.1.5 priority.
+- **Frontend stack** (ADR-010). Implemented as React + JSX + uPlot. Spec called for React + TypeScript + Recharts. uPlot was substituted for charts because the per-metric live sparkline grid is denser than Recharts handles cleanly at 2 Hz; TypeScript was deferred for build velocity. README reflects the as-built stack; ADR-010 is being updated.
+
+### What is specified but not yet implemented in v.1
+
+These are the real gaps. Each is named in the spec and each is genuinely on the v.1.5 list — not retired, not dropped. The v.1 build runs without them; production would not.
+
+- **Dedicated edge gateway with SQLite store-and-forward** (ADR-005, FR-2). The single most credible IIoT pattern in the spec. v.1's simulator publishes directly to Mosquitto; there is no separate gateway service, no SQLite buffer, and no `connected → buffering → draining` state machine. The spec describes this in detail because it is the right architecture; the implementation will follow in v.1.5. **High v.1.5 priority.**
+- **Two-layer anomaly detection: rolling z-score + Isolation Forest** (ADR-006, FR-5). v.1 alarms use static redline thresholds only (`redline_high` / `redline_low` per metric, defined in `backend/app/assets.py`). The two-layer ML detector specified in ADR-006 — z-score plus scikit-learn `IsolationForest`, both must agree — is not yet wired in. The redline approach is honest about what it is (a baseline) and produces real alarms, but it is not the detector specified. **High v.1.5 priority.**
+- **Declarative `simulator.yaml`** (ADR-007). The asset fleet is defined in `backend/app/assets.py` as a Python list. The YAML conversion is a near-mechanical transformation and is queued.
+- **`/faults/inject` endpoint** (FR-1.5). The simulator triggers anomalies on its own internal random schedule; there is no externally-triggered fault. Adding the HTTP endpoint is small (~30 lines) and is queued.
+- **`/health` endpoint** (NFR-5). Not yet present. Small.
+- **Test suite** (NFR-3, ADR-013). Coverage targets ≥70% on ingest and ≥60% overall are aspirational in v.1. The repo currently has no automated tests. Building out unit tests on the validators and detectors, plus integration tests on the round-trip and gateway recovery flows, is queued.
+- **Acceptance script** (`scripts/acceptance_test.sh`, SPEC §11.3, §12). Not yet written.
+- **CI workflow** (`.github/workflows/`, NFR-3, SPEC §12 criterion 9). Not yet present.
+- **Fly.io deployment** (ADR-012, NFR-2). The repo is public; the live URL is not yet stood up. The architecture is portable (single docker-compose for the data plane, two uvicorn services); deployment is the next chunk of work, not a redesign.
+- **`docs/AWS_DEPLOYMENT.md`** (SPEC §14, referenced from README and several ADRs). Not yet written. The mapping is well-understood (Mosquitto → AWS IoT Core, FastAPI → ECS Fargate, Timescale → RDS or Timestream, React → CloudFront/S3, WebSocket → ALB) but is not yet captured in the doc.
+- **`docs/SMOKE_TEST.md`** (SPEC §11.4). Not yet written.
+
+The principle behind keeping all of these visible in `SPEC.md` and `DECISIONS.md` rather than retroactively trimming the spec to match the code: **the spec is the design, not the changelog.** A reviewer reading the spec sees what the system is meant to be; reading this file sees what shipped in v.1 and what is queued. Hiding the gap by editing the spec down to match the code would lose information, not gain credibility.
+
 ## Deliberate v.1 cuts
 
 These are out of scope by design. Each is named in `SPEC.md` §13 and / or `§15` (roadmap).
@@ -43,9 +85,3 @@ Per SPEC §11.6:
 - **No backup / restore for TimescaleDB.** Docker volume only; if the volume is lost, history is lost. Production answer is managed Postgres with point-in-time recovery.
 - **No structured log aggregation.** Logs go to stdout per service; viewing across services means `docker compose logs` or Fly's log stream. No central aggregator.
 - **No metrics or tracing.** `/health` is the only observability surface. A production deployment would add Prometheus metrics and OpenTelemetry traces.
-
-## To be filled during build
-
-This section is a placeholder for issues discovered while implementing the spec. Every item here is something that surprised the build and is worth recording so a reviewer doesn't have to guess what's known vs. unknown.
-
-- _(none yet)_
