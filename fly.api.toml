@@ -2,7 +2,7 @@
 #
 # Required secret (DB connection string with the POSTGRES_PASSWORD chosen for
 # forge-dbs):
-#   fly secrets set DB_URL='postgresql://factory:<password>@forge-dbs.flycast:5432/factory' --app forge-apis
+#   fly secrets set DB_URL='postgresql://factory:<password>@forge-dbs.internal:5432/factory' --app forge-apis
 app = "forge-apis"
 primary_region = "iad"
 
@@ -10,7 +10,7 @@ primary_region = "iad"
   dockerfile = "Dockerfile.backend"
 
 [env]
-  MQTT_HOST = "forge-broker.flycast"
+  MQTT_HOST = "forge-broker.internal"
   MQTT_PORT = "1883"
   PORT = "8000"
   STATIC_DIR = "/app/static"
