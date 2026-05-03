@@ -1,0 +1,38 @@
+# TimescaleDB. Internal-only — reachable as forge-dbs.flycast:5432. Backed by a
+# Fly volume named db_data; create it before first deploy:
+#   fly volumes create db_data --size 1 --app forge-dbs --region iad
+#
+# POSTGRES_PASSWORD must be set as a secret:
+#   fly secrets set POSTGRES_PASSWORD=<pick-something> --app forge-dbs
+app = "forge-dbs"
+primary_region = "iad"
+
+[build]
+  image = "timescale/timescaledb:latest-pg16"
+
+[env]
+  POSTGRES_USER = "factory"
+  POSTGRES_DB = "factory"
+  # PGDATA in a subdir avoids Postgres treating the volume's lost+found as data.
+  PGDATA = "/var/lib/postgresql/data/pgdata"
+
+[mounts]
+  source = "db_data"
+  destination = "/var/lib/postgresql/data"
+
+[[services]]
+  internal_port = 5432
+  protocol = "tcp"
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[services.tcp_checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "30s"  # Postgres needs time to come up on cold boot.
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 512

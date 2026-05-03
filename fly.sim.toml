@@ -1,0 +1,20 @@
+# Edge simulator. Outbound only (publishes telemetry to forge-broker). No
+# inbound services. Shares the backend image with forge-api; only the CMD
+# differs, set via [processes].
+app = "forge-sim"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile.backend"
+
+[env]
+  MQTT_HOST = "forge-broker.flycast"
+  MQTT_PORT = "1883"
+
+[processes]
+  app = "python -m app.simulator"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256

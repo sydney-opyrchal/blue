@@ -1,0 +1,35 @@
+# Keep the build context small — anything in here is not sent to Docker.
+
+# Python
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.pytest_cache
+**/.coverage
+**/.coverage_html
+**/htmlcov
+backend/.venv
+backend/.coverage_html
+
+# Node
+**/node_modules
+frontend/dist
+
+# Runtime data — never bake into an image
+mosquitto/data
+mosquitto/log
+
+# Editor / OS
+.vscode
+.idea
+.DS_Store
+
+# VCS
+.git
+.gitignore
+
+# Docs and infra files that don't belong in service images
+*.md
+docs/
+.github/
+fly.*.toml
