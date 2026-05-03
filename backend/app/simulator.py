@@ -8,6 +8,7 @@ Run:  python -m app.simulator
 """
 import json
 import math
+import os
 import random
 import time
 import threading
@@ -18,8 +19,8 @@ import paho.mqtt.client as mqtt
 
 from app.assets import ASSETS
 
-MQTT_HOST = "localhost"
-MQTT_PORT = 1883
+MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
+MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 PUBLISH_HZ = 2  # 2 messages per metric per second
 
 # --- Anomaly injection ---------------------------------------------------------
