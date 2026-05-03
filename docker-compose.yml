@@ -1,0 +1,32 @@
+version: "3.9"
+
+# IIoT Stack: MQTT broker + TimescaleDB
+# Run: docker compose up -d
+# Stop: docker compose down
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: ng-mqtt
+    ports:
+      - "1883:1883"     # MQTT
+      - "9001:9001"     # MQTT over WebSockets (browser-friendly)
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: ng-tsdb
+    environment:
+      POSTGRES_USER: factory
+      POSTGRES_PASSWORD: factory
+      POSTGRES_DB: factory
+    ports:
+      - "5432:5432"
+    volumes:
+      - tsdb-data:/var/lib/postgresql/data
+
+volumes:
+  tsdb-data:
