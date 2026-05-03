@@ -2,11 +2,13 @@
 
 ADR-style log of the load-bearing calls. Each entry: what was chosen, what was rejected, and why. Anything subjective enough that a reviewer might ask "why not X?" lives here.
 
-The decisions below align with the v.1 spec (`SPEC.md`); where this file and the spec disagree, the spec wins.
+The decisions below align with the v.1 spec (`SPEC.md`); where this file and the spec disagree, the spec wins. The **Status:** line under each ADR title records the v.1 implementation state of that decision; cross-referenced gaps are tracked in `KNOWN_ISSUES.md`.
 
 ---
 
 ## ADR-001 — MQTT (Mosquitto) for the transport
+
+**Status:** Implemented in v.1. Mosquitto in docker-compose; paho-mqtt clients in simulator and ingest.
 
 **Decision:** Eclipse Mosquitto as the broker; MQTT 3.1.1 between gateway and ingest.
 
@@ -21,6 +23,8 @@ The decisions below align with the v.1 spec (`SPEC.md`); where this file and the
 
 ## ADR-002 — Sparkplug-B-inspired topics, JSON payloads with explicit `schema_version`
 
+**Status:** Partial in v.1. Topic shape simplified to 4 levels (`factory/{area}/{cell}/{asset_id}/{metric}`; `{site}` segment deferred). Payload simplified to `{ts, asset_id, metric, value}`; `schema_version`, `quality`, and `metadata` block deferred. Tracked in `KNOWN_ISSUES.md`. v.1.5 priority.
+
 **Decision:** Topic shape: `factory/{site}/{bay}/{cell}/{device_id}/{tag}` (ISA-95 / Sparkplug-B namespace shape). Payloads are JSON with a top-level `schema_version`, `quality` field (OPC UA-inspired enum), and explicit `metadata` echoing the topic hierarchy.
 
 **Why:** The topic convention signals "this is how real IIoT systems are organized." The JSON payload keeps `mosquitto_sub` traffic readable and avoids a protobuf codegen step. The explicit `schema_version` is the cheap forward-compat hedge that costs nothing now and saves weeks later. The `quality` field is borrowed from OPC UA so reviewers familiar with that world see the right vocabulary.
@@ -33,6 +37,8 @@ The decisions below align with the v.1 spec (`SPEC.md`); where this file and the
 ---
 
 ## ADR-003 — TimescaleDB as the historian, tag-based schema
+
+**Status:** Partial in v.1. TimescaleDB hypertable implemented; row layout simplified to `(ts, asset_id, metric, value)`. Full SPEC §6.4 schema (`site`, `bay`, `cell`, `quality`, `unit`) deferred. Retention policy not yet scheduled. Tracked in `KNOWN_ISSUES.md`. v.1.5 priority.
 
 **Decision:** Postgres + TimescaleDB extension. `telemetry` is a hypertable with columns `(time, site, bay, cell, device_id, tag, value, quality, unit)` — one row per reading, not one column per sensor.
 
@@ -50,6 +56,8 @@ The decisions below align with the v.1 spec (`SPEC.md`); where this file and the
 
 ## ADR-004 — FastAPI + paho-mqtt + asyncpg in one ingest process
 
+**Status:** Implemented in v.1. Single uvicorn process runs the MQTT subscriber, asyncpg pool, REST endpoints, and WebSocket fan-out. The `asyncio.run_coroutine_threadsafe` bridge described in the note is the live mechanism in `backend/app/main.py`.
+
 **Decision:** Single Python process subscribes to MQTT (paho), validates and writes to Timescale (asyncpg), and fans out to the browser over WebSockets (FastAPI).
 
 **Why:** FastAPI's async story makes the WS fan-out trivial. paho-mqtt is the canonical Python MQTT client; asyncpg is the fastest Postgres driver. One process keeps the demo deployable from a single `uvicorn` command and stays inside the 7-hour budget.
@@ -61,6 +69,8 @@ The decisions below align with the v.1 spec (`SPEC.md`); where this file and the
 ---
 
 ## ADR-005 — Dedicated edge gateway with SQLite store-and-forward
+
+**Status:** Specified, not yet implemented in v.1. The simulator publishes directly to Mosquitto. The dedicated gateway service, the SQLite buffer, and the `connected → buffering → draining` state machine are queued for v.1.5. This is the highest-priority architectural item on the v.1.5 list — the spec describes it because it is the right pattern; the demo runs without it for now. Tracked in `KNOWN_ISSUES.md`.
 
 **Decision:** A separate Python service sits between simulated devices and Mosquitto. While the broker is reachable it forwards with negligible latency; while it isn't, it buffers to a local SQLite file and drains in chronological order on reconnect. State machine: `connected` → `buffering` → `draining` → `connected`.
 
@@ -76,6 +86,8 @@ The decisions below align with the v.1 spec (`SPEC.md`); where this file and the
 ---
 
 ## ADR-006 — Two-layer anomaly detection: rolling z-score + Isolation Forest, both must agree
+
+**Status:** Specified, not yet implemented in v.1. v.1 alarms run on static redline thresholds only (`redline_high` / `redline_low` per metric in `backend/app/assets.py`). The rolling z-score and `IsolationForest` layers are queued for v.1.5. Static thresholds are kept regardless as the source of `expected_range` on alarm payloads. Tracked in `KNOWN_ISSUES.md`. High v.1.5 priority.
 
 **Decision:** Two detectors run on every incoming reading.
 1. Layer 1: rolling z-score per `(device_id, tag)` over the last 60 seconds; trips at |z| > 3.
@@ -94,6 +106,8 @@ An alarm raises only when both layers agree. Layer 1 alone is configurable for h
 
 ## ADR-007 — Declarative `simulator.yaml` over Python-coded asset list
 
+**Status:** Specified, not yet implemented in v.1. The asset fleet currently lives in `backend/app/assets.py` as a Python list. The YAML conversion is a near-mechanical transform queued for v.1.5. The decision still stands; the conversion is overdue.
+
 **Decision:** Factory layout, devices, sensor tags, normal ranges, and fault scenarios live in `simulator.yaml`, not in Python. The simulator and the `machines` table both load from this file at boot.
 
 **Why:** A reviewer reading `simulator.yaml` sees the whole factory in one screen. A reviewer reading `assets.py` sees a Python data structure that could be anything. Declarative config is also what real IIoT systems do (Ignition tag exports, OPC UA address spaces).
@@ -104,6 +118,8 @@ An alarm raises only when both layers agree. Layer 1 alone is configurable for h
 
 ## ADR-008 — ULID alarm IDs, full lifecycle in one row
 
+**Status:** Partial in v.1. The single-row lifecycle (`raised_at`, `cleared_at`, `acknowledged`) is implemented. ULID `alarm_id` is not — current PK is `BIGSERIAL`. Switching the PK is a small migration queued for v.1.5.
+
 **Decision:** Alarms get a ULID `alarm_id` at raise time. The same row carries `state` (`raised` / `acknowledged` / `cleared`) and the corresponding timestamps (`raised_at`, `acknowledged_at`, `cleared_at`). No separate `alarm_events` audit table in v.1.
 
 **Why:** ULIDs are sortable by time, URL-safe, and stable across state transitions — better than UUIDs for this use case. Single-row lifecycle is enough to satisfy §6.2 and §7.4 within budget; an event-sourced version is a v.2 candidate.
@@ -113,6 +129,8 @@ An alarm raises only when both layers agree. Layer 1 alone is configurable for h
 ---
 
 ## ADR-009 — WebSocket fan-out from the ingest process, typed envelope
+
+**Status:** Partial in v.1. WebSocket fan-out is implemented; the typed-envelope discipline is in place. The exact envelope shape and the type vocabulary differ from SPEC §6.3 — code uses `{type, ...fields}` with `type` ∈ `{snapshot, reading, alarm_raised, alarm_cleared, alarm_acked}` rather than the spec's `{type, timestamp, payload}` with `type` ∈ `{telemetry, alarm, machine_status, system_status}`. Aligning to spec is queued for v.1.5.
 
 **Decision:** Browser clients open one WS to the ingest service. Every server→client message uses the envelope `{ type, timestamp, payload }` with `type` ∈ {`telemetry`, `alarm`, `machine_status`, `system_status`}.
 
@@ -125,6 +143,8 @@ An alarm raises only when both layers agree. Layer 1 alone is configurable for h
 ---
 
 ## ADR-010 — React + TypeScript, Recharts for charts
+
+**Status:** Partial in v.1. Implemented as React + JSX (TypeScript deferred for build velocity) and uPlot for charts (substituted for Recharts because the dense per-metric live sparkline grid renders more cleanly under uPlot at 2 Hz). README reflects the as-built stack. TypeScript migration is queued for v.1.5; chart library will likely stay on uPlot based on v.1 experience.
 
 **Decision:** React + TypeScript with Vite. Recharts for time-series charts.
 
@@ -139,6 +159,8 @@ An alarm raises only when both layers agree. Layer 1 alone is configurable for h
 
 ## ADR-011 — No auth in v.1
 
+**Status:** Implemented (intentional absence) in v.1. Broker, REST, and WebSocket are all unauthenticated as specified. Listed in `SPEC.md` §13 and `KNOWN_ISSUES.md`. v.2 candidate.
+
 **Decision:** Broker is anonymous, ingest API is unauthenticated, WS is plaintext.
 
 **Why:** Auth is a rabbit hole — mTLS on the broker, OIDC on the API, role mapping in the UI — that doesn't differentiate the demo. Listed as out of scope in §13 and as v.2 in §15.
@@ -148,6 +170,8 @@ An alarm raises only when both layers agree. Layer 1 alone is configurable for h
 ---
 
 ## ADR-012 — Fly.io for hosting
+
+**Status:** Specified, not yet implemented in v.1. Repo is public on GitHub; live deployment to Fly.io is queued. No `fly.toml` or per-service Dockerfiles for the application yet. Tracked in `KNOWN_ISSUES.md`. High v.1.5 priority — the README claims a deployable stack and the deployment is needed to back that claim.
 
 **Decision:** Deploy v.1 to Fly.io.
 
@@ -162,6 +186,8 @@ An alarm raises only when both layers agree. Layer 1 alone is configurable for h
 
 ## ADR-013 — Tests in scope: layered, with explicit honesty about gaps
 
+**Status:** Specified, not yet implemented in v.1. The repo contains no automated tests, no `scripts/acceptance_test.sh`, no CI workflow, and no `docs/SMOKE_TEST.md`. Coverage targets in `SPEC.md` NFR-3 are aspirational for v.1. Test scaffolding is queued for v.1.5; the spec described shape is the right one and stands. High v.1.5 priority — credibility of the implementation under change depends on this layer.
+
 **Decision:** Unit tests on validators / detectors / lifecycle transitions; integration tests on round-trips and gateway recovery; one acceptance script (`scripts/acceptance_test.sh`) that walks the §12 criteria; a 15-item manual smoke test in `docs/SMOKE_TEST.md`. Coverage targets: ≥70% ingest, ≥60% overall.
 
 **Why:** Tests are what makes this a credible v.1 instead of a vibe-coded demo. The four-layer split (unit / integration / acceptance / smoke) maps the test surface to the highest-leverage failures rather than chasing a coverage number.
@@ -171,6 +197,8 @@ An alarm raises only when both layers agree. Layer 1 alone is configurable for h
 ---
 
 ## ADR-014 — Hand-rolled spec docs, spec-first methodology
+
+**Status:** Implemented in v.1. SPEC, PLAN, CLAUDE, DECISIONS, and KNOWN_ISSUES are all present at the repo root and were authored before application code. The methodology described in SPEC §16 is the methodology in use.
 
 **Decision:** `README` + `SPEC` + `PLAN` + `DECISIONS` + `CLAUDE` + `KNOWN_ISSUES` at the root, `docs/AWS_DEPLOYMENT.md` and `docs/SMOKE_TEST.md` underneath. Spec authored before code; plan derived from spec; code follows.
 

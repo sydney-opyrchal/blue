@@ -8,7 +8,7 @@ primary_region = "iad"
   dockerfile = "Dockerfile.backend"
 
 [env]
-  MQTT_HOST = "forge-broker.flycast"
+  MQTT_HOST = "forge-broker.internal"
   MQTT_PORT = "1883"
 
 [processes]

@@ -1,4 +1,4 @@
-# TimescaleDB. Internal-only — reachable as forge-dbs.flycast:5432. Backed by a
+# TimescaleDB. Internal-only — reachable as forge-dbs.internal:5432. Backed by a
 # Fly volume named db_data; create it before first deploy:
 #   fly volumes create db_data --size 1 --app forge-dbs --region iad
 #
