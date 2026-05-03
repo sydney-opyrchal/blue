@@ -1,0 +1,9 @@
+# Mosquitto for forge-broker. We bake the config in so the image is the
+# deployable artifact — no separate config volume to manage.
+FROM eclipse-mosquitto:2
+
+COPY mosquitto/config/mosquitto.conf /mosquitto/config/mosquitto.conf
+
+EXPOSE 1883 9001
+
+# Default entrypoint from the base image runs mosquitto with the bundled config.

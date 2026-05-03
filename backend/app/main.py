@@ -19,6 +19,7 @@ from typing import Dict, List, Set
 import asyncpg
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 import paho.mqtt.client as mqtt
 
 from app.assets import ASSETS, ASSET_TYPE_LABEL
@@ -331,3 +332,11 @@ async def ws_endpoint(ws: WebSocket):
         pass
     finally:
         ws_clients.discard(ws)
+
+
+# ---- Static SPA --------------------------------------------------------------
+# Mounted last so /api/* and /ws win the route match. In local dev STATIC_DIR
+# does not exist; Vite serves the SPA on :5173 and proxies /api + /ws to us.
+STATIC_DIR = os.getenv("STATIC_DIR", "/app/static")
+if os.path.isdir(STATIC_DIR):
+    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="spa")

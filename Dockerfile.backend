@@ -1,0 +1,52 @@
+# Multi-stage build used by both forge-api and forge-sim. The final image
+# carries the FastAPI app plus the built React SPA; the simulator is the same
+# image with a different CMD (set in fly.toml).
+#
+# Build context is the repo root: `docker build -f Dockerfile.backend .`
+
+# ---------- Stage 1: build the React frontend ----------
+FROM node:20-alpine AS frontend
+WORKDIR /frontend
+
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+
+COPY frontend/ ./
+RUN npm run build
+
+
+# ---------- Stage 2: Python runtime ----------
+FROM python:3.11-slim AS runtime
+
+# Stop Python from writing .pyc files and force unbuffered stdout for
+# friendlier `fly logs` behavior.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+# curl for fly healthchecks; build-essential only if a wheel is missing — sklearn
+# and asyncpg both ship manylinux wheels for amd64/arm64 so we stay slim.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY backend/requirements.txt ./
+RUN pip install -r requirements.txt
+
+COPY backend/app/ ./app/
+
+# Copy the built SPA into the location main.py looks for.
+COPY --from=frontend /frontend/dist /app/static
+
+ENV MQTT_HOST=forge-broker.flycast \
+    MQTT_PORT=1883 \
+    PORT=8000 \
+    STATIC_DIR=/app/static
+
+EXPOSE 8000
+
+# Default to the API. fly.toml overrides this for the simulator app.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

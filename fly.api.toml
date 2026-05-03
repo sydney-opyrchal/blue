@@ -1,0 +1,43 @@
+# FastAPI ingest service + bundled React SPA. Public HTTPS + WSS.
+#
+# Required secret (DB connection string with the POSTGRES_PASSWORD chosen for
+# forge-dbs):
+#   fly secrets set DB_URL='postgresql://factory:<password>@forge-dbs.flycast:5432/factory' --app forge-apis
+app = "forge-apis"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile.backend"
+
+[env]
+  MQTT_HOST = "forge-broker.flycast"
+  MQTT_PORT = "1883"
+  PORT = "8000"
+  STATIC_DIR = "/app/static"
+
+# WebSockets ride on the http_service edge — Fly upgrades them transparently.
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+  # /api/assets is a cheap REST endpoint that exists today; swap for /health
+  # once the v.1 ingest rewrite lands.
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/api/assets"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 512
