@@ -1,102 +1,179 @@
 # DECISIONS
 
-Short ADR-style log of the load-bearing calls. Each entry: what was chosen, what was rejected, and why. Anything subjective enough that a reviewer might ask "why not X?" should live here.
+ADR-style log of the load-bearing calls. Each entry: what was chosen, what was rejected, and why. Anything subjective enough that a reviewer might ask "why not X?" lives here.
+
+The decisions below align with the v.1 spec (`SPEC.md`); where this file and the spec disagree, the spec wins.
 
 ---
 
 ## ADR-001 — MQTT (Mosquitto) for the transport
 
-**Decision:** Eclipse Mosquitto as the broker; MQTT 3.1.1 between simulator and ingest.
+**Decision:** Eclipse Mosquitto as the broker; MQTT 3.1.1 between gateway and ingest.
 
-**Why:** MQTT is the de-facto standard for IIoT — lightweight, pub/sub, retained messages, last-will for disconnect detection. Mosquitto is the simplest broker that's still production-credible.
+**Why:** MQTT is the de-facto standard for IIoT — lightweight, pub/sub, retained messages, last-will for disconnect detection. Mosquitto is the simplest broker that's still production-credible and has zero-config Docker images.
 
 **Rejected:**
-- *Kafka* — overkill at 80 msg/s; brokers are heavier to run and the client story for browsers/edge is worse. Would revisit at thousands of tags or when replayability matters.
+- *Kafka* — overkill at 50 msg/s; brokers are heavier to run and the client story for browsers/edge is worse. Listed in §15 as a v.2/v.3 consideration.
+- *AWS IoT Core* — production answer (documented in `docs/AWS_DEPLOYMENT.md`), but locks the local-dev story to AWS credentials. Out of scope for v.1.
 - *HTTP polling* — no fan-out semantics, wastes round-trips, doesn't model the real factory transport.
 
 ---
 
-## ADR-002 — Sparkplug-B-style topics, JSON payloads (not protobuf)
+## ADR-002 — Sparkplug-B-inspired topics, JSON payloads with explicit `schema_version`
 
-**Decision:** Topic shape follows Sparkplug-B / ISA-95: `factory/{area}/{cell}/{asset}/{metric}`. Payloads are JSON.
+**Decision:** Topic shape: `factory/{site}/{bay}/{cell}/{device_id}/{tag}` (ISA-95 / Sparkplug-B namespace shape). Payloads are JSON with a top-level `schema_version`, `quality` field (OPC UA-inspired enum), and explicit `metadata` echoing the topic hierarchy.
 
-**Why:** The topic convention is the part that signals "this is how real IIoT systems are organized." The protobuf payload is the part that makes traffic unreadable in `mosquitto_sub` and adds a codegen step. For a demo, readability wins.
-
-**Rejected:** Full Sparkplug-B compliance (binary payload, birth/death certificates). Listed in roadmap; would matter for interop with Ignition or AVEVA.
-
----
-
-## ADR-003 — TimescaleDB as the historian
-
-**Decision:** Postgres + TimescaleDB extension, hypertable per metric stream.
-
-**Why:** Time-series performance plus the entire SQL ecosystem. Hypertables handle the chunking; queries are just SQL. Easier to operate than InfluxDB on a small project.
+**Why:** The topic convention signals "this is how real IIoT systems are organized." The JSON payload keeps `mosquitto_sub` traffic readable and avoids a protobuf codegen step. The explicit `schema_version` is the cheap forward-compat hedge that costs nothing now and saves weeks later. The `quality` field is borrowed from OPC UA so reviewers familiar with that world see the right vocabulary.
 
 **Rejected:**
-- *InfluxDB* — strong product but a separate query language, separate ops story, and the v2/v3 transition is still messy.
-- *Plain Postgres* — fine at this scale but doesn't tell the time-series story I want to tell.
-- *Parquet on disk* — great for batch analytics, wrong shape for live dashboards.
+- *Sparkplug-B binary protobuf payloads + birth/death certificates* — the right call for a real Ignition / AVEVA interop story. Listed in §15 / `KNOWN_ISSUES.md`.
+- *No `schema_version` field* — saves 20 bytes; costs the ability to evolve the contract without breaking consumers.
+- *Topic hierarchy without `site`* — earlier draft used `factory/{area}/{cell}/{asset}/{metric}`. Adding `site` and `bay` makes the multi-site / multi-building case structurally trivial later, even though v.1 has one site.
 
 ---
 
-## ADR-004 — FastAPI + paho-mqtt + asyncpg
+## ADR-003 — TimescaleDB as the historian, tag-based schema
+
+**Decision:** Postgres + TimescaleDB extension. `telemetry` is a hypertable with columns `(time, site, bay, cell, device_id, tag, value, quality, unit)` — one row per reading, not one column per sensor.
+
+**Why:** Time-series performance plus the entire SQL ecosystem. Hypertables handle the chunking; queries are just SQL. Tag-based schema means adding a new sensor is a publish, not a migration.
+
+**Retention:** Drop telemetry older than 7 days via a scheduled job. Real factories keep years; v.1 keeps a week. Aggregations beyond 7 days deferred to v.2.
+
+**Rejected:**
+- *Per-sensor columns* — tempting for query simplicity, fatal for schema evolution. New sensor = new migration = no.
+- *InfluxDB* — strong product, but a separate query language and ops story. Postgres lets the team stay in SQL.
+- *Amazon Timestream* — production answer (see `docs/AWS_DEPLOYMENT.md`), wrong for local-first dev.
+- *Plain Postgres* — fine at this scale, but doesn't tell the time-series story I want to tell, and chunking has to be hand-rolled.
+
+---
+
+## ADR-004 — FastAPI + paho-mqtt + asyncpg in one ingest process
 
 **Decision:** Single Python process subscribes to MQTT (paho), validates and writes to Timescale (asyncpg), and fans out to the browser over WebSockets (FastAPI).
 
-**Why:** FastAPI's async story makes the WS fan-out trivial. paho-mqtt is the canonical Python MQTT client; asyncpg is the fastest Postgres driver. One process keeps the demo deployable from a single `uvicorn` command.
+**Why:** FastAPI's async story makes the WS fan-out trivial. paho-mqtt is the canonical Python MQTT client; asyncpg is the fastest Postgres driver. One process keeps the demo deployable from a single `uvicorn` command and stays inside the 7-hour budget.
 
-**Note:** paho-mqtt runs its loop on a thread, FastAPI runs on asyncio. Bridge with `asyncio.run_coroutine_threadsafe(...)` from the MQTT callback. This is the one piece of glue that's worth understanding before changing.
+**Note:** paho-mqtt runs its loop on a thread, FastAPI runs on asyncio. Bridge with `asyncio.run_coroutine_threadsafe(...)` from MQTT callbacks. This is the one piece of glue worth understanding before changing.
 
-**Rejected:** Splitting ingest and API into separate services. Right call eventually (independent scaling, isolation), wrong call for a 10-hour build.
-
----
-
-## ADR-005 — WebSocket fan-out from a single API process
-
-**Decision:** Browser clients open a WS to the API; the API broadcasts every tick.
-
-**Why:** Pushes live data without polling. Fits the single-process architecture in ADR-004.
-
-**Limit:** Re-encodes JSON per client. Fine for a handful of operators, breaks above ~50 concurrent. Mitigation listed in SPEC.md scaling notes (encode once per tick, or Redis pub/sub between replicas).
-
-**Rejected:** SSE — simpler but one-way; we want ack-alarm round-trips on the same channel.
+**Rejected:** Splitting ingest and API into separate services. Right call eventually; wrong call inside the v.1 budget.
 
 ---
 
-## ADR-006 — uPlot for the time-series charts
+## ADR-005 — Dedicated edge gateway with SQLite store-and-forward
 
-**Decision:** uPlot on the asset-drilldown view.
+**Decision:** A separate Python service sits between simulated devices and Mosquitto. While the broker is reachable it forwards with negligible latency; while it isn't, it buffers to a local SQLite file and drains in chronological order on reconnect. State machine: `connected` → `buffering` → `draining` → `connected`.
 
-**Why:** Recharts and Chart.js choke on multi-channel high-frequency updates. uPlot was built for this exact use case.
+**Why:** This is the single most credible IIoT pattern in the project. Real factories lose network constantly; production code that assumes a healthy broker is a junior smell. Standing up a real store-and-forward gateway — even a small one — is the difference between "demo" and "I understand the failure modes."
 
-**Rejected:** Recharts (DX is nicer, perf is not), Chart.js (similar), D3-from-scratch (too much code for one weekend).
+**SQLite specifically:** durable across restart, no external dependency, ordered drains by primary key.
 
----
-
-## ADR-007 — No auth, no TLS in scope
-
-**Decision:** Broker is anonymous, API is unauthenticated, WS is plaintext.
-
-**Why:** Auth is a rabbit hole — mTLS on the broker, OIDC on the API, role mapping in the UI — that doesn't differentiate the demo. Listed in roadmap.
-
-**How to apply:** If a reviewer asks "where's auth?" — point at this entry and the roadmap. Don't half-build it.
+**Rejected:**
+- *Buffering inside the simulator process* — same code path as production devices won't have, defeats the point.
+- *Buffering inside the ingest service* — wrong side of the broker. Doesn't help when the broker itself is down.
+- *In-memory buffer only* — lost on gateway restart. Broker outages and gateway restarts both happen; one buffer should survive both.
 
 ---
 
-## ADR-008 — Single-file React UI
+## ADR-006 — Two-layer anomaly detection: rolling z-score + Isolation Forest, both must agree
 
-**Decision:** `App.jsx` holds the whole frontend; Vite builds it.
+**Decision:** Two detectors run on every incoming reading.
+1. Layer 1: rolling z-score per `(device_id, tag)` over the last 60 seconds; trips at |z| > 3.
+2. Layer 2: scikit-learn `IsolationForest`, trained on synthetic baseline data per tag; trips on `predict() == -1`.
 
-**Why:** Component splitting is premature at this size. One file means one place to read the whole UI. Will split if/when a second view appears that genuinely shares state.
+An alarm raises only when both layers agree. Layer 1 alone is configurable for higher sensitivity.
 
-**Rejected:** Next.js (no SSR need, extra build complexity), full component library (Radix/shadcn would dwarf the actual app code).
+**Why:** Single-detector systems are noisy. The "both must agree" gate cuts false positives sharply with almost no engineering cost. Isolation Forest is a defensible ML choice — small, fast, no GPU, and recognizable to anyone who has shipped an anomaly system before. Two layers also gives a specific story for FM-7 (false positives) in the spec.
+
+**Rejected:**
+- *Static redlines only* — works, but doesn't earn the "anomaly detection" label honestly. Static thresholds are kept in `simulator.yaml` as the source of `expected_range` displayed on alarm payloads.
+- *Heavyweight models (LSTM, Prophet, etc.)* — overkill for v.1, training infra alone would eat the budget.
+- *Single detector* — cheaper but noisier. The "both must agree" pattern is the cheapest credible upgrade.
 
 ---
 
-## ADR-009 — Hand-rolled spec docs over Spec Kit
+## ADR-007 — Declarative `simulator.yaml` over Python-coded asset list
 
-**Decision:** README + SPEC + DECISIONS + CLAUDE, written by hand.
+**Decision:** Factory layout, devices, sensor tags, normal ranges, and fault scenarios live in `simulator.yaml`, not in Python. The simulator and the `machines` table both load from this file at boot.
 
-**Why:** For a 10-hour single-purpose project, the docs *are* the deliverable showing how I think. Spec Kit's slash commands and generated artifacts add ceremony without proving thinking. Reviewer should be able to read SPEC and DECISIONS in 10 minutes and know exactly what was built and what was traded off.
+**Why:** A reviewer reading `simulator.yaml` sees the whole factory in one screen. A reviewer reading `assets.py` sees a Python data structure that could be anything. Declarative config is also what real IIoT systems do (Ignition tag exports, OPC UA address spaces).
 
-**Rejected:** Spec Kit (`/speckit.specify`, `/speckit.plan`, etc.) — defensible for a longer project; wrong shape here.
+**Rejected:** Keeping the Python module. Faster to edit during dev but harder to reason about and not portable to other languages or tools.
+
+---
+
+## ADR-008 — ULID alarm IDs, full lifecycle in one row
+
+**Decision:** Alarms get a ULID `alarm_id` at raise time. The same row carries `state` (`raised` / `acknowledged` / `cleared`) and the corresponding timestamps (`raised_at`, `acknowledged_at`, `cleared_at`). No separate `alarm_events` audit table in v.1.
+
+**Why:** ULIDs are sortable by time, URL-safe, and stable across state transitions — better than UUIDs for this use case. Single-row lifecycle is enough to satisfy §6.2 and §7.4 within budget; an event-sourced version is a v.2 candidate.
+
+**Rejected:** UUIDv4 (not time-sortable), auto-incrementing integers (leak ordering and count to clients), separate `alarm_events` table (the right answer for audit trails, the wrong answer for v.1 budget).
+
+---
+
+## ADR-009 — WebSocket fan-out from the ingest process, typed envelope
+
+**Decision:** Browser clients open one WS to the ingest service. Every server→client message uses the envelope `{ type, timestamp, payload }` with `type` ∈ {`telemetry`, `alarm`, `machine_status`, `system_status`}.
+
+**Why:** Pushes live data without polling. The typed envelope is the cheapest move that makes the client side router obvious and lets us add new event types without a protocol change.
+
+**Limit:** Re-encodes JSON per client. Fine for a handful of operators; mitigation listed in `SPEC.md` §10 / scaling notes.
+
+**Rejected:** Server-Sent Events (one-way only; no acknowledge round-trip), untyped messages (every new event becomes an ad-hoc spec).
+
+---
+
+## ADR-010 — React + TypeScript, Recharts for charts
+
+**Decision:** React + TypeScript with Vite. Recharts for time-series charts.
+
+**Why:** TypeScript catches the WS envelope / payload mismatch bugs at edit time, which is exactly the class of bug this app is most exposed to. Recharts is a familiar, sufficient charting library at v.1 scale (~6 machines × ~3 tags × 1 Hz on the detail view) and matches the spec.
+
+**Rejected:**
+- *uPlot* — faster at high frequency / many series, but the v.1 detail view shows one machine at a time. Recharts wins on developer ergonomics inside the budget.
+- *Plain JavaScript* — TypeScript pays for itself the first time the WS envelope changes.
+- *Component library (Radix / shadcn / MUI)* — would dwarf the actual app code at this size.
+
+---
+
+## ADR-011 — No auth in v.1
+
+**Decision:** Broker is anonymous, ingest API is unauthenticated, WS is plaintext.
+
+**Why:** Auth is a rabbit hole — mTLS on the broker, OIDC on the API, role mapping in the UI — that doesn't differentiate the demo. Listed as out of scope in §13 and as v.2 in §15.
+
+**How to apply:** If a reviewer asks "where's auth?" — point at this entry, §13, and §15. Don't half-build it.
+
+---
+
+## ADR-012 — Fly.io for hosting
+
+**Decision:** Deploy v.1 to Fly.io.
+
+**Why:** Multi-service Docker deploys, long-lived WebSocket connections, public URL with HTTPS, and free-tier-friendly. Cold-start under 90s is achievable (acceptance criterion #10).
+
+**Rejected:**
+- *AWS-native (ECS Fargate + ALB + IoT Core + RDS)* — the production answer (`docs/AWS_DEPLOYMENT.md`). Wrong shape for v.1 because each service needs separate IAM, networking, and deploy pipelines.
+- *Render / Railway* — fine, but Fly's WS story and multi-container support is closer to what a real deployment looks like.
+- *Self-hosted on a VPS* — adds an ops chore that doesn't serve the demo.
+
+---
+
+## ADR-013 — Tests in scope: layered, with explicit honesty about gaps
+
+**Decision:** Unit tests on validators / detectors / lifecycle transitions; integration tests on round-trips and gateway recovery; one acceptance script (`scripts/acceptance_test.sh`) that walks the §12 criteria; a 15-item manual smoke test in `docs/SMOKE_TEST.md`. Coverage targets: ≥70% ingest, ≥60% overall.
+
+**Why:** Tests are what makes this a credible v.1 instead of a vibe-coded demo. The four-layer split (unit / integration / acceptance / smoke) maps the test surface to the highest-leverage failures rather than chasing a coverage number.
+
+**Rejected:** Skipping tests entirely (the obvious time-budget temptation, the obvious credibility cost).
+
+---
+
+## ADR-014 — Hand-rolled spec docs, spec-first methodology
+
+**Decision:** `README` + `SPEC` + `PLAN` + `DECISIONS` + `CLAUDE` + `KNOWN_ISSUES` at the root, `docs/AWS_DEPLOYMENT.md` and `docs/SMOKE_TEST.md` underneath. Spec authored before code; plan derived from spec; code follows.
+
+**Why:** For a 7-hour single-purpose project, the docs *are* the deliverable showing how I think. Hand-written artifacts read as thinking; tool-generated ones don't. The spec-first sequence is the methodology being demonstrated, not just the order of operations (see SPEC §16).
+
+**Rejected:** Spec Kit (`/speckit.specify`, `/speckit.plan`, etc.) — defensible for a longer project; wrong shape for this one.
