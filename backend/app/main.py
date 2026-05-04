@@ -19,6 +19,7 @@ from typing import Dict, List, Set
 import asyncpg
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 import paho.mqtt.client as mqtt
 
@@ -40,6 +41,7 @@ asset_lookup = {a["id"]: a for a in ASSETS}
 
 main_loop: asyncio.AbstractEventLoop = None
 db_pool: asyncpg.Pool = None
+_mqtt_connected: bool = False
 
 
 # ---- DB ----------------------------------------------------------------------
@@ -138,8 +140,16 @@ async def _persist_alarm(alarm: dict):
 
 # ---- MQTT --------------------------------------------------------------------
 def on_connect(client, userdata, flags, rc, props=None):
+    global _mqtt_connected
+    _mqtt_connected = (rc == 0)
     print(f"[ingest] mqtt connected rc={rc}")
     client.subscribe("factory/+/+/+/+", qos=0)
+
+
+def on_disconnect(client, userdata, rc, props=None):
+    global _mqtt_connected
+    _mqtt_connected = False
+    print(f"[ingest] mqtt disconnected rc={rc}")
 
 
 def on_message(client, userdata, msg):
@@ -211,6 +221,7 @@ async def lifespan(app: FastAPI):
 
     client = mqtt.Client(client_id="ingest-service", protocol=mqtt.MQTTv5)
     client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
     client.on_message = on_message
     client.connect(MQTT_HOST, MQTT_PORT, 60)
     client.loop_start()
@@ -231,6 +242,49 @@ app.add_middleware(
 
 
 # ---- REST endpoints ----------------------------------------------------------
+@app.get("/health")
+async def health():
+    """SPEC NFR-5 — structured dependency status.
+
+    Returns 'healthy' iff MQTT is connected and DB is reachable. Returns
+    'degraded' if either is impaired. Status code is 200 on healthy/degraded
+    and 503 on unhealthy so platform-level health checks behave correctly.
+    """
+    deps = {"mqtt": "unknown", "database": "unknown"}
+
+    # DB check: cheap SELECT 1 on the pool.
+    if db_pool is not None:
+        try:
+            async with db_pool.acquire() as conn:
+                await conn.fetchval("SELECT 1")
+            deps["database"] = "healthy"
+        except Exception:
+            deps["database"] = "unhealthy"
+    else:
+        deps["database"] = "unhealthy"
+
+    # MQTT check: paho exposes is_connected() on the client. We currently
+    # don't hold a module-level reference to the client — track it.
+    deps["mqtt"] = "healthy" if _mqtt_connected else "unhealthy"
+
+    overall = (
+        "healthy" if all(v == "healthy" for v in deps.values())
+        else "degraded" if any(v == "healthy" for v in deps.values())
+        else "unhealthy"
+    )
+    status_code = 503 if overall == "unhealthy" else 200
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "status": overall,
+            "service": "ingest",
+            "version": "1.0.0",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "dependencies": deps,
+        },
+    )
+
+
 @app.get("/api/assets")
 def list_assets():
     return [

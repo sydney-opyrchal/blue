@@ -28,14 +28,12 @@ primary_region = "iad"
     soft_limit = 200
     hard_limit = 250
 
-  # /api/assets is a cheap REST endpoint that exists today; swap for /health
-  # once the v.1 ingest rewrite lands.
   [[http_service.checks]]
     grace_period = "10s"
     interval = "30s"
     method = "GET"
     timeout = "5s"
-    path = "/api/assets"
+    path = "/health"
 
 [[vm]]
   cpu_kind = "shared"
