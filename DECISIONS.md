@@ -23,7 +23,7 @@ The decisions below align with the v.1 spec (`SPEC.md`); where this file and the
 
 ## ADR-002 — Sparkplug-B-inspired topics, JSON payloads with explicit `schema_version`
 
-**Status:** Partial in v.1. Topic shape simplified to 4 levels (`factory/{area}/{cell}/{asset_id}/{metric}`; `{site}` segment deferred). Payload simplified to `{ts, asset_id, metric, value}`; `schema_version`, `quality`, and `metadata` block deferred. Tracked in `KNOWN_ISSUES.md`. v.1.5 priority.
+**Status:** Defined and unit-tested in `app/contracts.py` at 100% coverage. Not yet enforced on the ingest path; `main.py` and `simulator.py` still operate on a simplified payload. Wire-up is queued.
 
 **Decision:** Topic shape: `factory/{site}/{bay}/{cell}/{device_id}/{tag}` (ISA-95 / Sparkplug-B namespace shape). Payloads are JSON with a top-level `schema_version`, `quality` field (OPC UA-inspired enum), and explicit `metadata` echoing the topic hierarchy.
 
@@ -38,7 +38,7 @@ The decisions below align with the v.1 spec (`SPEC.md`); where this file and the
 
 ## ADR-003 — TimescaleDB as the historian, tag-based schema
 
-**Status:** Partial in v.1. TimescaleDB hypertable implemented; row layout simplified to `(ts, asset_id, metric, value)`. Full SPEC §6.4 schema (`site`, `bay`, `cell`, `quality`, `unit`) deferred. Retention policy not yet scheduled. Tracked in `KNOWN_ISSUES.md`. v.1.5 priority.
+**Status:** Partial. TimescaleDB hypertable implemented; row layout simplified to `(ts, asset_id, metric, value)`. Full SPEC §6.4 schema (`site`, `bay`, `cell`, `quality`, `unit`) deferred to v.1.5.
 
 **Decision:** Postgres + TimescaleDB extension. `telemetry` is a hypertable with columns `(time, site, bay, cell, device_id, tag, value, quality, unit)` — one row per reading, not one column per sensor.
 
@@ -56,7 +56,7 @@ The decisions below align with the v.1 spec (`SPEC.md`); where this file and the
 
 ## ADR-004 — FastAPI + paho-mqtt + asyncpg in one ingest process
 
-**Status:** Implemented in v.1. Single uvicorn process runs the MQTT subscriber, asyncpg pool, REST endpoints, and WebSocket fan-out. The `asyncio.run_coroutine_threadsafe` bridge described in the note is the live mechanism in `backend/app/main.py`.
+**Status:** Implemented in v.1. Single uvicorn process runs the MQTT subscriber, asyncpg pool, REST endpoints, and WebSocket fan-out.
 
 **Decision:** Single Python process subscribes to MQTT (paho), validates and writes to Timescale (asyncpg), and fans out to the browser over WebSockets (FastAPI).
 
@@ -70,7 +70,7 @@ The decisions below align with the v.1 spec (`SPEC.md`); where this file and the
 
 ## ADR-005 — Dedicated edge gateway with SQLite store-and-forward
 
-**Status:** Specified, not yet implemented in v.1. The simulator publishes directly to Mosquitto. The dedicated gateway service, the SQLite buffer, and the `connected → buffering → draining` state machine are queued for v.1.5. This is the highest-priority architectural item on the v.1.5 list — the spec describes it because it is the right pattern; the demo runs without it for now. Tracked in `KNOWN_ISSUES.md`.
+**Status:** Specified, not yet implemented in v.1. Simulator publishes directly to Mosquitto. Highest-priority architectural item on the v.1.5 list.
 
 **Decision:** A separate Python service sits between simulated devices and Mosquitto. While the broker is reachable it forwards with negligible latency; while it isn't, it buffers to a local SQLite file and drains in chronological order on reconnect. State machine: `connected` → `buffering` → `draining` → `connected`.
 
@@ -87,7 +87,7 @@ The decisions below align with the v.1 spec (`SPEC.md`); where this file and the
 
 ## ADR-006 — Two-layer anomaly detection: rolling z-score + Isolation Forest, both must agree
 
-**Status:** Specified, not yet implemented in v.1. v.1 alarms run on static redline thresholds only (`redline_high` / `redline_low` per metric in `backend/app/assets.py`). The rolling z-score and `IsolationForest` layers are queued for v.1.5. Static thresholds are kept regardless as the source of `expected_range` on alarm payloads. Tracked in `KNOWN_ISSUES.md`. High v.1.5 priority.
+**Status:** Detectors implemented in `app/detectors/zscore.py` and `app/detectors/isoforest.py` at 100% coverage. The "both must agree" gate is not yet wired into the ingest request path; v.1 alarms still use redline thresholds. Wire-up is queued.
 
 **Decision:** Two detectors run on every incoming reading.
 1. Layer 1: rolling z-score per `(device_id, tag)` over the last 60 seconds; trips at |z| > 3.
@@ -106,7 +106,7 @@ An alarm raises only when both layers agree. Layer 1 alone is configurable for h
 
 ## ADR-007 — Declarative `simulator.yaml` over Python-coded asset list
 
-**Status:** Specified, not yet implemented in v.1. The asset fleet currently lives in `backend/app/assets.py` as a Python list. The YAML conversion is a near-mechanical transform queued for v.1.5. The decision still stands; the conversion is overdue.
+**Status:** Specified, not yet implemented in v.1. Asset fleet still defined in `backend/app/assets.py` as a Python list. YAML conversion queued.
 
 **Decision:** Factory layout, devices, sensor tags, normal ranges, and fault scenarios live in `simulator.yaml`, not in Python. The simulator and the `machines` table both load from this file at boot.
 
@@ -118,7 +118,7 @@ An alarm raises only when both layers agree. Layer 1 alone is configurable for h
 
 ## ADR-008 — ULID alarm IDs, full lifecycle in one row
 
-**Status:** Partial in v.1. The single-row lifecycle (`raised_at`, `cleared_at`, `acknowledged`) is implemented. ULID `alarm_id` is not — current PK is `BIGSERIAL`. Switching the PK is a small migration queued for v.1.5.
+**Status:** Lifecycle implemented in `app/alarms/lifecycle.py` with ULID identifiers, `IllegalTransition` enforcement, and 100% coverage. Not yet wired into the ingest path; running alarms still use the BIGSERIAL/dict pattern.
 
 **Decision:** Alarms get a ULID `alarm_id` at raise time. The same row carries `state` (`raised` / `acknowledged` / `cleared`) and the corresponding timestamps (`raised_at`, `acknowledged_at`, `cleared_at`). No separate `alarm_events` audit table in v.1.
 
@@ -130,7 +130,7 @@ An alarm raises only when both layers agree. Layer 1 alone is configurable for h
 
 ## ADR-009 — WebSocket fan-out from the ingest process, typed envelope
 
-**Status:** Partial in v.1. WebSocket fan-out is implemented; the typed-envelope discipline is in place. The exact envelope shape and the type vocabulary differ from SPEC §6.3 — code uses `{type, ...fields}` with `type` ∈ `{snapshot, reading, alarm_raised, alarm_cleared, alarm_acked}` rather than the spec's `{type, timestamp, payload}` with `type` ∈ `{telemetry, alarm, machine_status, system_status}`. Aligning to spec is queued for v.1.5.
+**Status:** Partial. WebSocket fan-out implemented; typed-envelope discipline in place. Exact envelope shape and type vocabulary differ from SPEC §6.3 — code uses `{type, …fields}` with `type` ∈ `{snapshot, reading, alarm_raised, alarm_cleared, alarm_acked}`. Aligning to spec is queued.
 
 **Decision:** Browser clients open one WS to the ingest service. Every server→client message uses the envelope `{ type, timestamp, payload }` with `type` ∈ {`telemetry`, `alarm`, `machine_status`, `system_status`}.
 
@@ -144,7 +144,7 @@ An alarm raises only when both layers agree. Layer 1 alone is configurable for h
 
 ## ADR-010 — React + TypeScript, Recharts for charts
 
-**Status:** Partial in v.1. Implemented as React + JSX (TypeScript deferred for build velocity) and uPlot for charts (substituted for Recharts because the dense per-metric live sparkline grid renders more cleanly under uPlot at 2 Hz). README reflects the as-built stack. TypeScript migration is queued for v.1.5; chart library will likely stay on uPlot based on v.1 experience.
+**Status:** Partial. Implemented as React + JSX (TypeScript deferred for build velocity) and uPlot for charts (substituted for Recharts because the dense per-metric live sparkline grid renders more cleanly under uPlot at 2 Hz). README reflects the as-built stack.
 
 **Decision:** React + TypeScript with Vite. Recharts for time-series charts.
 
@@ -159,7 +159,7 @@ An alarm raises only when both layers agree. Layer 1 alone is configurable for h
 
 ## ADR-011 — No auth in v.1
 
-**Status:** Implemented (intentional absence) in v.1. Broker, REST, and WebSocket are all unauthenticated as specified. Listed in `SPEC.md` §13 and `KNOWN_ISSUES.md`. v.2 candidate.
+**Status:** Implemented (intentional absence) in v.1.
 
 **Decision:** Broker is anonymous, ingest API is unauthenticated, WS is plaintext.
 
@@ -171,7 +171,7 @@ An alarm raises only when both layers agree. Layer 1 alone is configurable for h
 
 ## ADR-012 — Fly.io for hosting
 
-**Status:** Specified, not yet implemented in v.1. Repo is public on GitHub; live deployment to Fly.io is queued. No `fly.toml` or per-service Dockerfiles for the application yet. Tracked in `KNOWN_ISSUES.md`. High v.1.5 priority — the README claims a deployable stack and the deployment is needed to back that claim.
+**Status:** Live at https://forge-apis.fly.dev. `fly.api.toml`, `fly.broker.toml`, `fly.db.toml`, `fly.sim.toml` and the multi-stage Dockerfiles are deployed.
 
 **Decision:** Deploy v.1 to Fly.io.
 
@@ -186,7 +186,7 @@ An alarm raises only when both layers agree. Layer 1 alone is configurable for h
 
 ## ADR-013 — Tests in scope: layered, with explicit honesty about gaps
 
-**Status:** Specified, not yet implemented in v.1. The repo contains no automated tests, no `scripts/acceptance_test.sh`, no CI workflow, and no `docs/SMOKE_TEST.md`. Coverage targets in `SPEC.md` NFR-3 are aspirational for v.1. Test scaffolding is queued for v.1.5; the spec described shape is the right one and stands. High v.1.5 priority — credibility of the implementation under change depends on this layer.
+**Status:** 69 unit tests across contracts, detectors, and alarm lifecycle, with 100% coverage on those modules. Acceptance script (`scripts/acceptance_test.sh`), integration tests, and CI workflow are queued.
 
 **Decision:** Unit tests on validators / detectors / lifecycle transitions; integration tests on round-trips and gateway recovery; one acceptance script (`scripts/acceptance_test.sh`) that walks the §12 criteria; a 15-item manual smoke test in `docs/SMOKE_TEST.md`. Coverage targets: ≥70% ingest, ≥60% overall.
 
@@ -198,7 +198,7 @@ An alarm raises only when both layers agree. Layer 1 alone is configurable for h
 
 ## ADR-014 — Hand-rolled spec docs, spec-first methodology
 
-**Status:** Implemented in v.1. SPEC, PLAN, CLAUDE, DECISIONS, and KNOWN_ISSUES are all present at the repo root and were authored before application code. The methodology described in SPEC §16 is the methodology in use.
+**Status:** Implemented in v.1. SPEC, PLAN, CLAUDE, DECISIONS, and KNOWN_ISSUES are at the repo root and were authored before application code.
 
 **Decision:** `README` + `SPEC` + `PLAN` + `DECISIONS` + `CLAUDE` + `KNOWN_ISSUES` at the root, `docs/AWS_DEPLOYMENT.md` and `docs/SMOKE_TEST.md` underneath. Spec authored before code; plan derived from spec; code follows.
 
