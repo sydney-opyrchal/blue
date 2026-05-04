@@ -18,8 +18,8 @@ The spec was written first and aims at a production-grade prototype. The v.1 bui
 - Spec-first hand-rolled docs (SPEC, PLAN, CLAUDE, DECISIONS, KNOWN_ISSUES) — ADR-014 ✓
 - Pydantic v2 wire-format contracts (SPEC §6.1, §6.2, §6.3) — ADR-002 (schema definition only; not yet on the ingest path)
 - Rolling z-score and Isolation Forest detectors as standalone, unit-tested modules — ADR-006 (modules ready; not yet on the ingest path)
-- Alarm lifecycle state machine with ULID identifiers — ADR-008 (module ready; not yet on the ingest path)
-- Test suite (69 tests, 100% coverage on contracts / detectors / alarms) — ADR-013, NFR-3
+- Alarm lifecycle state machine with ULID identifiers — ADR-008 (wired into `evaluate_alarm`; alarms persist with ULID `alarm_id` PKs)
+- Test suite (73 tests, 100% coverage on contracts / detectors / alarms; smoke tests for `/health` and the `evaluate_alarm` wire-up) — ADR-013, NFR-3
 - Multi-stage Dockerfile, Mosquitto Dockerfile, and four-app Fly.io deployment topology — ADR-012, NFR-2
 
 ### What is partially implemented (simplified from spec)
@@ -27,20 +27,19 @@ The spec was written first and aims at a production-grade prototype. The v.1 bui
 - **Telemetry payload schema** (ADR-002, SPEC §6.1). Code uses `{ts, asset_id, metric, value}`. Spec specifies additionally `schema_version`, `quality`, and a `metadata` block with `unit`, `site`, `bay`, `cell`. Forward-compat fields not yet emitted. v.1.5 priority.
 - **MQTT topic shape** (SPEC §6.1). Code uses `factory/{area}/{cell}/{asset_id}/{metric}` (4 levels). Spec specifies `factory/{site}/{bay}/{cell}/{device_id}/{tag}` (5 levels — `site` is missing). The multi-site case is structurally available but not exercised. v.1.5 priority.
 - **Database schema** (SPEC §6.4). The `readings` hypertable carries `(ts, asset_id, metric, value)`. Spec specifies `(time, site, bay, cell, device_id, tag, value, quality, unit)`. v.1.5 priority.
-- **Alarm record** (ADR-008, SPEC §6.2). The lifecycle column shape is implemented (`raised_at`, `cleared_at`, `acknowledged`). The ULID `alarm_id` is not — current PK is `BIGSERIAL`. v.1.5 priority.
+- **Alarm record** (ADR-008, SPEC §6.2). ULID `alarm_id` is implemented and persisted as the alarms table PK. The full lifecycle in one row (`acknowledged_at`, `cleared_at` columns) is not — the DB only records the raise event; acknowledgements and clears mutate the in-memory `Alarm` object and broadcast over WebSocket but are not persisted. v.1.5 priority.
 - **WebSocket envelope** (ADR-009, SPEC §6.3). Spec specifies `{type, timestamp, payload}` with `type` ∈ `{telemetry, alarm, machine_status, system_status}`. Code uses `{type, ...fields}` with `type` ∈ `{snapshot, reading, alarm_raised, alarm_cleared, alarm_acked}`. The typed-envelope discipline holds; the exact shape differs. v.1.5 priority.
 - **Frontend stack** (ADR-010). Implemented as React + JSX + uPlot. Spec called for React + TypeScript + Recharts. uPlot was substituted for charts because the per-metric live sparkline grid is denser than Recharts handles cleanly at 2 Hz; TypeScript was deferred for build velocity. README reflects the as-built stack; ADR-010 is being updated.
 
 ### v.1 ingest path: simpler than the modules describe
 
-The new modules — `app/contracts.py`, `app/detectors/zscore.py`, `app/detectors/isoforest.py`, `app/alarms/lifecycle.py` — are implemented and unit-tested. They are not yet wired into the running ingest service. `backend/app/main.py` and `backend/app/simulator.py` still operate on the simpler v.1 contracts described in the section above.
+Two of the new modules — `app/contracts.py` and the pair under `app/detectors/` — are implemented and unit-tested but not yet wired into the running ingest service. The third module, `app/alarms/lifecycle.py`, is wired (see "What is fully implemented" above).
 
 Specifically, in the running v.1 demo:
 - The MQTT subscriber parses incoming messages as raw JSON dicts rather than validating against the `Telemetry` Pydantic model.
 - Alarms are raised on simple redline thresholds (`redline_high` / `redline_low` in `assets.py`) rather than the two-layer z-score + Isolation Forest gate described in ADR-006.
-- Active alarms are tracked as a `dict[str, dict]` with a `BIGSERIAL` PK rather than as `Alarm` objects with ULID IDs from the lifecycle module.
 
-The integration is the next chunk of v.1.5 work. Doing it correctly under the v.1 budget — and shipping a working demo — meant landing the modules with high test coverage first, then wiring them in. The wire-up is mechanical; the modules are designed to drop in.
+The remaining wire-up is the next chunk of v.1.5 work. Doing it correctly under the v.1 budget — and shipping a working demo — meant landing the modules with high test coverage first, then wiring them in incrementally. The contracts and detectors wire-up is mechanical; the modules are designed to drop in the same way the lifecycle module did.
 
 ### What is specified but not yet implemented in v.1
 
@@ -50,7 +49,6 @@ These are the real gaps. Each is named in the spec and each is genuinely on the 
 - **Two-layer anomaly detection: rolling z-score + Isolation Forest** (ADR-006, FR-5). v.1 alarms use static redline thresholds only (`redline_high` / `redline_low` per metric, defined in `backend/app/assets.py`). The two-layer ML detector specified in ADR-006 — z-score plus scikit-learn `IsolationForest`, both must agree — is not yet wired in. The redline approach is honest about what it is (a baseline) and produces real alarms, but it is not the detector specified. **High v.1.5 priority.**
 - **Declarative `simulator.yaml`** (ADR-007). The asset fleet is defined in `backend/app/assets.py` as a Python list. The YAML conversion is a near-mechanical transformation and is queued.
 - **`/faults/inject` endpoint** (FR-1.5). The simulator triggers anomalies on its own internal random schedule; there is no externally-triggered fault. Adding the HTTP endpoint is small (~30 lines) and is queued.
-- **`/health` endpoint** (NFR-5). Not yet present. Small.
 - **Acceptance script** (`scripts/acceptance_test.sh`, SPEC §11.3, §12). Not yet written.
 - **CI workflow** (`.github/workflows/`, NFR-3, SPEC §12 criterion 9). Not yet present.
 - **Live Fly.io deployment** (ADR-012, NFR-2). Live at https://forge-apis.fly.dev
@@ -86,7 +84,7 @@ These are limitations of the implementation rather than scope choices. Each maps
 - **No per-device anomaly-detector tuning.** The two-layer detector uses one z-score window (60s) and one Isolation Forest contamination parameter for every tag. Per-tag tuning is a v.2 candidate (FM-7).
 - **WebSocket fan-out re-encodes per client.** Acceptable at the v.1 client count (a handful of operators); not acceptable above ~50 concurrent clients. Mitigation listed in SPEC §10 scaling notes.
 - **Bounded in-memory buffer in ingest under DB outage.** ~10,000 messages; oldest dropped on overflow with a logged warning (FM-2). Acceptable for short outages, lossy for long ones.
-- **No event-sourced alarm audit trail.** Alarms carry their full lifecycle in one row (ADR-008). Reconstruction of historical state changes beyond `raised_at` / `acknowledged_at` / `cleared_at` is not possible.
+- **No persisted alarm state transitions.** The alarms table records the raise event only (`alarm_id`, `device_id`, `tag`, `severity`, `current_value`, `raised_at`, `detector`). Acknowledgements and clears mutate the in-memory `Alarm` object and broadcast over WebSocket but are not written back to the DB. Restarting the ingest service loses ack state on currently-active alarms. v.1.5: persist `acknowledged_at` / `cleared_at` per ADR-008.
 
 ## Testing gaps (v.1)
 
