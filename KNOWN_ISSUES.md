@@ -53,7 +53,10 @@ These are the real gaps. Each is named in the spec and each is genuinely on the 
 - **`/health` endpoint** (NFR-5). Not yet present. Small.
 - **Acceptance script** (`scripts/acceptance_test.sh`, SPEC §11.3, §12). Not yet written.
 - **CI workflow** (`.github/workflows/`, NFR-3, SPEC §12 criterion 9). Not yet present.
-- **Live Fly.io deployment** (ADR-012, NFR-2). The four-app Fly topology is configured (`fly.api.toml`, `fly.broker.toml`, `fly.db.toml`, `fly.sim.toml`) and the Dockerfiles build cleanly. The running deployment URL is to be confirmed; until then the demo runs locally via the README "Running it" instructions.
+- **Live Fly.io deployment** (ADR-012, NFR-2). Live at https://forge-apis.fly.dev
+  (FastAPI + bundled SPA, public). Internal-only services: forge-broker,
+  forge-dbs, forge-sim. CI / GitHub Actions integration with the deploy is
+  queued for v.1.5.
 - **`docs/AWS_DEPLOYMENT.md`** (SPEC §14, referenced from README and several ADRs). Not yet written. The mapping is well-understood (Mosquitto → AWS IoT Core, FastAPI → ECS Fargate, Timescale → RDS or Timestream, React → CloudFront/S3, WebSocket → ALB) but is not yet captured in the doc.
 - **`docs/SMOKE_TEST.md`** (SPEC §11.4). Not yet written.
 
