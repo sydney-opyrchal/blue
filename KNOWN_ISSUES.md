@@ -16,6 +16,11 @@ The spec was written first and aims at a production-grade prototype. The v.1 bui
 - Anomaly injection in the simulator producing realistic alarms end-to-end ✓
 - No-auth posture documented and intentional — ADR-011 ✓
 - Spec-first hand-rolled docs (SPEC, PLAN, CLAUDE, DECISIONS, KNOWN_ISSUES) — ADR-014 ✓
+- Pydantic v2 wire-format contracts (SPEC §6.1, §6.2, §6.3) — ADR-002 (schema definition only; not yet on the ingest path)
+- Rolling z-score and Isolation Forest detectors as standalone, unit-tested modules — ADR-006 (modules ready; not yet on the ingest path)
+- Alarm lifecycle state machine with ULID identifiers — ADR-008 (module ready; not yet on the ingest path)
+- Test suite (69 tests, 100% coverage on contracts / detectors / alarms) — ADR-013, NFR-3
+- Multi-stage Dockerfile, Mosquitto Dockerfile, and four-app Fly.io deployment topology — ADR-012, NFR-2
 
 ### What is partially implemented (simplified from spec)
 
@@ -26,6 +31,17 @@ The spec was written first and aims at a production-grade prototype. The v.1 bui
 - **WebSocket envelope** (ADR-009, SPEC §6.3). Spec specifies `{type, timestamp, payload}` with `type` ∈ `{telemetry, alarm, machine_status, system_status}`. Code uses `{type, ...fields}` with `type` ∈ `{snapshot, reading, alarm_raised, alarm_cleared, alarm_acked}`. The typed-envelope discipline holds; the exact shape differs. v.1.5 priority.
 - **Frontend stack** (ADR-010). Implemented as React + JSX + uPlot. Spec called for React + TypeScript + Recharts. uPlot was substituted for charts because the per-metric live sparkline grid is denser than Recharts handles cleanly at 2 Hz; TypeScript was deferred for build velocity. README reflects the as-built stack; ADR-010 is being updated.
 
+### v.1 ingest path: simpler than the modules describe
+
+The new modules — `app/contracts.py`, `app/detectors/zscore.py`, `app/detectors/isoforest.py`, `app/alarms/lifecycle.py` — are implemented and unit-tested. They are not yet wired into the running ingest service. `backend/app/main.py` and `backend/app/simulator.py` still operate on the simpler v.1 contracts described in the section above.
+
+Specifically, in the running v.1 demo:
+- The MQTT subscriber parses incoming messages as raw JSON dicts rather than validating against the `Telemetry` Pydantic model.
+- Alarms are raised on simple redline thresholds (`redline_high` / `redline_low` in `assets.py`) rather than the two-layer z-score + Isolation Forest gate described in ADR-006.
+- Active alarms are tracked as a `dict[str, dict]` with a `BIGSERIAL` PK rather than as `Alarm` objects with ULID IDs from the lifecycle module.
+
+The integration is the next chunk of v.1.5 work. Doing it correctly under the v.1 budget — and shipping a working demo — meant landing the modules with high test coverage first, then wiring them in. The wire-up is mechanical; the modules are designed to drop in.
+
 ### What is specified but not yet implemented in v.1
 
 These are the real gaps. Each is named in the spec and each is genuinely on the v.1.5 list — not retired, not dropped. The v.1 build runs without them; production would not.
@@ -35,10 +51,9 @@ These are the real gaps. Each is named in the spec and each is genuinely on the 
 - **Declarative `simulator.yaml`** (ADR-007). The asset fleet is defined in `backend/app/assets.py` as a Python list. The YAML conversion is a near-mechanical transformation and is queued.
 - **`/faults/inject` endpoint** (FR-1.5). The simulator triggers anomalies on its own internal random schedule; there is no externally-triggered fault. Adding the HTTP endpoint is small (~30 lines) and is queued.
 - **`/health` endpoint** (NFR-5). Not yet present. Small.
-- **Test suite** (NFR-3, ADR-013). Coverage targets ≥70% on ingest and ≥60% overall are aspirational in v.1. The repo currently has no automated tests. Building out unit tests on the validators and detectors, plus integration tests on the round-trip and gateway recovery flows, is queued.
 - **Acceptance script** (`scripts/acceptance_test.sh`, SPEC §11.3, §12). Not yet written.
 - **CI workflow** (`.github/workflows/`, NFR-3, SPEC §12 criterion 9). Not yet present.
-- **Fly.io deployment** (ADR-012, NFR-2). The repo is public; the live URL is not yet stood up. The architecture is portable (single docker-compose for the data plane, two uvicorn services); deployment is the next chunk of work, not a redesign.
+- **Live Fly.io deployment** (ADR-012, NFR-2). The four-app Fly topology is configured (`fly.api.toml`, `fly.broker.toml`, `fly.db.toml`, `fly.sim.toml`) and the Dockerfiles build cleanly. The running deployment URL is to be confirmed; until then the demo runs locally via the README "Running it" instructions.
 - **`docs/AWS_DEPLOYMENT.md`** (SPEC §14, referenced from README and several ADRs). Not yet written. The mapping is well-understood (Mosquitto → AWS IoT Core, FastAPI → ECS Fargate, Timescale → RDS or Timestream, React → CloudFront/S3, WebSocket → ALB) but is not yet captured in the doc.
 - **`docs/SMOKE_TEST.md`** (SPEC §11.4). Not yet written.
 
