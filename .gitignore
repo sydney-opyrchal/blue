@@ -18,3 +18,9 @@ dist/
 mosquitto/data/
 mosquitto/log/
 *.log
+
+# Test artifacts
+.coverage
+.coverage_html/
+.pytest_cache/
+htmlcov/
