@@ -26,8 +26,8 @@ Forge was built spec-first using Claude Code. The specification, plan, project c
 - **[KNOWN_ISSUES.md](./KNOWN_ISSUES.md)** — honest accounting of v.1 implementation status, deliberate cuts, real gaps, and operational limits.
 - **[METHODOLOGY.md](./METHODOLOGY.md)** — the AI-assisted spec-first build approach, the disciplines that produced this repo, and what it does and does not claim.
 - **[CLAUDE.md](./CLAUDE.md)** — rules of engagement for the agent working in this repo.
-- **[docs/AWS_DEPLOYMENT.md](./docs/AWS_DEPLOYMENT.md)** — target production deployment topology on AWS.
-- **[docs/SMOKE_TEST.md](./docs/SMOKE_TEST.md)** — manual verification checklist, ~5 minutes.
+- **[AWS_DEPLOYMENT.md](./AWS_DEPLOYMENT.md)** — target production deployment topology on AWS.
+- **[SMOKE_TEST.md](./SMOKE_TEST.md)** — manual verification checklist, ~5 minutes.
 
 If you're reviewing this in under 10 minutes, read SPEC.md and KNOWN_ISSUES.md.
 
