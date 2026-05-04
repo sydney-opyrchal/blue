@@ -56,7 +56,6 @@ These are the real gaps. Each is named in the spec and each is genuinely on the 
   forge-dbs, forge-sim. CI / GitHub Actions integration with the deploy is
   queued for v.1.5.
 - **`docs/AWS_DEPLOYMENT.md`** (SPEC §14, referenced from README and several ADRs). Not yet written. The mapping is well-understood (Mosquitto → AWS IoT Core, FastAPI → ECS Fargate, Timescale → RDS or Timestream, React → CloudFront/S3, WebSocket → ALB) but is not yet captured in the doc.
-- **`docs/SMOKE_TEST.md`** (SPEC §11.4). Not yet written.
 
 The principle behind keeping all of these visible in `SPEC.md` and `DECISIONS.md` rather than retroactively trimming the spec to match the code: **the spec is the design, not the changelog.** A reviewer reading the spec sees what the system is meant to be; reading this file sees what shipped in v.1 and what is queued. Hiding the gap by editing the spec down to match the code would lose information, not gain credibility.
 
