@@ -4,6 +4,16 @@ A vertical-slice Industrial IoT monitoring platform inspired by the manufacturin
 
 > All asset data is simulated. Personal project, not affiliated with Blue Origin.
 
+## Live demo
+
+`https://forge-apis.fly.dev` — public FastAPI + React SPA. The simulator and
+broker run on internal-only Fly apps (`forge-sim`, `forge-broker`,
+`forge-dbs`). Telemetry flows continuously; the simulator's internal anomaly
+schedule produces real alarms every few minutes.
+
+Open the URL, click any machine on the floor map for live charts, and watch
+the Active Alarms rail for the next anomaly.
+
 ## Where to read what
 
 - **[SPEC.md](./SPEC.md)** — what this is, who it's for, acceptance criteria, architecture, simulated fleet, vocabulary, what's out of scope.

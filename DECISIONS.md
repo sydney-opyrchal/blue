@@ -171,7 +171,7 @@ An alarm raises only when both layers agree. Layer 1 alone is configurable for h
 
 ## ADR-012 — Fly.io for hosting
 
-**Status:** Configured. `fly.api.toml`, `fly.broker.toml`, `fly.db.toml`, `fly.sim.toml` and the multi-stage Dockerfiles are in the repo. Live deployment URL to be confirmed.
+**Status:** Live at https://forge-apis.fly.dev. `fly.api.toml`, `fly.broker.toml`, `fly.db.toml`, `fly.sim.toml` and the multi-stage Dockerfiles are deployed.
 
 **Decision:** Deploy v.1 to Fly.io.
 
