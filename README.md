@@ -14,13 +14,20 @@ schedule produces real alarms every few minutes.
 Open the URL, click any machine on the floor map for live charts, and watch
 the Active Alarms rail for the next anomaly.
 
+## Methodology
+
+Forge was built spec-first using Claude Code. The specification, plan, project conventions, and architectural decisions in this repo were authored by hand before any application code was written. The agent operates inside the rules in [CLAUDE.md](./CLAUDE.md), against the contracts in [SPEC.md](./SPEC.md), with implementation status tracked in [KNOWN_ISSUES.md](./KNOWN_ISSUES.md). The build is AI-assisted, intentionally and transparently; the engineer architected, decided, reviewed, and tested. See [METHODOLOGY.md](./METHODOLOGY.md) for the full approach.
+
 ## Where to read what
 
 - **[SPEC.md](./SPEC.md)** — what this is, who it's for, acceptance criteria, architecture, simulated fleet, vocabulary, what's out of scope.
-- **[PLAN.md](./PLAN.md)** — implementation plan: repo layout, build sequence, deployment plan, acceptance script structure.
-- **[DECISIONS.md](./DECISIONS.md)** — ADR-style log of the load-bearing calls (why MQTT, why Timescale, why JSON over protobuf, etc.) and what was rejected. Each ADR carries a v.1 implementation status.
+- **[PLAN.md](./PLAN.md)** — implementation plan: repo layout, build sequence, deployment plan, risk register.
+- **[DECISIONS.md](./DECISIONS.md)** — ADR-style log of the load-bearing calls and what was rejected. Each ADR carries a v.1 implementation status.
 - **[KNOWN_ISSUES.md](./KNOWN_ISSUES.md)** — honest accounting of v.1 implementation status, deliberate cuts, real gaps, and operational limits.
+- **[METHODOLOGY.md](./METHODOLOGY.md)** — the AI-assisted spec-first build approach, the disciplines that produced this repo, and what it does and does not claim.
 - **[CLAUDE.md](./CLAUDE.md)** — rules of engagement for the agent working in this repo.
+- **[AWS_DEPLOYMENT.md](./AWS_DEPLOYMENT.md)** — target production deployment topology on AWS.
+- **[SMOKE_TEST.md](./SMOKE_TEST.md)** — manual verification checklist, ~5 minutes.
 
 If you're reviewing this in under 10 minutes, read SPEC.md and KNOWN_ISSUES.md.
 
