@@ -24,6 +24,8 @@ from fastapi.staticfiles import StaticFiles
 import paho.mqtt.client as mqtt
 
 from app.assets import ASSETS, ASSET_TYPE_LABEL
+from app.alarms import Alarm, IllegalTransition
+from app.contracts import Severity
 
 MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
@@ -34,7 +36,7 @@ DB_URL = os.getenv(
 # ---- In-memory state ---------------------------------------------------------
 latest_values: Dict[str, Dict[str, float]] = defaultdict(dict)   # asset_id -> metric -> value
 latest_ts: Dict[str, int] = {}                                   # asset_id -> ms
-active_alarms: Dict[str, dict] = {}                              # alarm_key -> alarm
+active_alarms: Dict[str, Alarm] = {}                             # alarm_key -> Alarm
 alarm_history: deque = deque(maxlen=500)
 ws_clients: Set[WebSocket] = set()
 asset_lookup = {a["id"]: a for a in ASSETS}
@@ -60,15 +62,13 @@ CREATE INDEX IF NOT EXISTS readings_asset_metric_ts
   ON readings (asset_id, metric, ts DESC);
 
 CREATE TABLE IF NOT EXISTS alarms (
-  id           BIGSERIAL PRIMARY KEY,
-  asset_id     TEXT NOT NULL,
-  metric       TEXT NOT NULL,
-  severity     TEXT NOT NULL,
-  message      TEXT NOT NULL,
-  value        DOUBLE PRECISION,
-  raised_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  cleared_at   TIMESTAMPTZ,
-  acknowledged BOOLEAN NOT NULL DEFAULT FALSE
+  alarm_id      TEXT PRIMARY KEY,
+  device_id     TEXT NOT NULL,
+  tag           TEXT NOT NULL,
+  severity      TEXT NOT NULL,
+  current_value DOUBLE PRECISION,
+  raised_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  detector      TEXT NOT NULL
 );
 """
 
@@ -85,6 +85,29 @@ def alarm_key(asset_id: str, metric: str) -> str:
     return f"{asset_id}::{metric}"
 
 
+def alarm_to_ws_payload(alarm: Alarm) -> dict:
+    """Adapter from new Alarm model to the v.1 WS message shape the
+    dashboard already consumes. Spec §6.3 alignment is queued."""
+    return {
+        "key": f"{alarm.device_id}::{alarm.tag}",
+        "asset_id": alarm.device_id,
+        "asset_name": asset_lookup[alarm.device_id]["name"],
+        "metric": alarm.tag,
+        "value": alarm.current_value,
+        "severity": alarm.severity.value,
+        "message": (
+            f"{alarm.tag} = {alarm.current_value:.2f} exceeds redline "
+            f"{alarm.expected_range[1]}"
+            if alarm.current_value > alarm.expected_range[1]
+            else f"{alarm.tag} = {alarm.current_value:.2f} below redline "
+                 f"{alarm.expected_range[0]}"
+        ),
+        "raised_at": alarm.raised_at.isoformat(),
+        "acknowledged": alarm.state.value == "acknowledged",
+        "alarm_id": alarm.alarm_id,
+    }
+
+
 def evaluate_alarm(asset_id: str, metric: str, value: float):
     asset = asset_lookup.get(asset_id)
     if not asset:
@@ -98,24 +121,17 @@ def evaluate_alarm(asset_id: str, metric: str, value: float):
     breached = value > high or value < low
 
     if breached and key not in active_alarms:
-        alarm = {
-            "key": key,
-            "asset_id": asset_id,
-            "asset_name": asset["name"],
-            "metric": metric,
-            "value": value,
-            "severity": "high" if value > high else "low",
-            "message": (
-                f"{metric} = {value:.2f} exceeds redline {high}"
-                if value > high
-                else f"{metric} = {value:.2f} below redline {low}"
-            ),
-            "raised_at": datetime.utcnow().isoformat() + "Z",
-            "acknowledged": False,
-        }
+        alarm = Alarm(
+            device_id=asset_id,
+            tag=metric,
+            current_value=value,
+            expected_range=(low, high),
+            severity=Severity.HIGH if value > high else Severity.LOW,
+            detector="redline",
+        )
         active_alarms[key] = alarm
         alarm_history.appendleft(alarm)
-        broadcast({"type": "alarm_raised", "alarm": alarm})
+        broadcast({"type": "alarm_raised", "alarm": alarm_to_ws_payload(alarm)})
 
         if main_loop and db_pool:
             asyncio.run_coroutine_threadsafe(
@@ -123,18 +139,24 @@ def evaluate_alarm(asset_id: str, metric: str, value: float):
             )
 
     elif not breached and key in active_alarms:
-        cleared = active_alarms.pop(key)
-        cleared["cleared_at"] = datetime.utcnow().isoformat() + "Z"
-        broadcast({"type": "alarm_cleared", "alarm": cleared})
+        alarm = active_alarms.pop(key)
+        try:
+            alarm.clear()
+        except IllegalTransition as e:
+            print(f"[ingest] illegal alarm clear on {key}: {e}")
+            return
+        broadcast({"type": "alarm_cleared", "alarm": alarm_to_ws_payload(alarm)})
 
 
-async def _persist_alarm(alarm: dict):
+async def _persist_alarm(alarm: Alarm) -> None:
     async with db_pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO alarms (asset_id, metric, severity, message, value) "
-            "VALUES ($1,$2,$3,$4,$5)",
-            alarm["asset_id"], alarm["metric"], alarm["severity"],
-            alarm["message"], alarm["value"],
+            "INSERT INTO alarms (alarm_id, device_id, tag, severity, "
+            "current_value, raised_at, detector) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            alarm.alarm_id, alarm.device_id, alarm.tag,
+            alarm.severity.value, alarm.current_value,
+            alarm.raised_at, alarm.detector,
         )
 
 
@@ -336,21 +358,26 @@ async def asset_history(
 
 @app.get("/api/alarms/active")
 def get_active_alarms():
-    return list(active_alarms.values())
+    return [alarm_to_ws_payload(a) for a in active_alarms.values()]
 
 
 @app.get("/api/alarms/history")
 def get_alarm_history(limit: int = 100):
-    return list(alarm_history)[:limit]
+    return [alarm_to_ws_payload(a) for a in list(alarm_history)[:limit]]
 
 
 @app.post("/api/alarms/{alarm_key}/ack")
 def ack_alarm(alarm_key: str):
-    if alarm_key in active_alarms:
-        active_alarms[alarm_key]["acknowledged"] = True
-        broadcast({"type": "alarm_acked", "key": alarm_key})
-        return {"ok": True}
-    return {"ok": False}
+    if alarm_key not in active_alarms:
+        return {"ok": False}
+    alarm = active_alarms[alarm_key]
+    try:
+        alarm.acknowledge(by="dashboard")
+    except IllegalTransition as e:
+        print(f"[ingest] illegal alarm ack on {alarm_key}: {e}")
+        return {"ok": False}
+    broadcast({"type": "alarm_acked", "key": alarm_key})
+    return {"ok": True}
 
 
 @app.get("/api/oee")
